@@ -57,7 +57,6 @@ def get_json_paths(view):
 
     preceding_json_region = sublime.Region(containing_json_region.a, pos)
 
-
     jsonpath = json_path_for(view, preceding_json_region)
     if jsonpath:
       yield jsonpath
@@ -73,7 +72,6 @@ def get_containing_region(view, scope_selector, pos):
 
 
 def json_path_for(view, region):
-  pos = 0
   stack = []
   expect_key = False
 
@@ -113,13 +111,14 @@ def tokens_with_text(view, region):
     token_text = text[token_region.a - offset : token_region.b - offset]
     yield (token_region, scope, token_text)
 
+NON_QUOTED_KEY_REGEX = r"^[a-zA-Z0-9_][a-zA-Z0-9_]*$"
 
 def path_to_string(path_stack):
   s = '';
   for frame in path_stack:
     if frame['col_type'] == 'object':
       if 'key' in frame:
-        if re.match(r"^[a-zA-Z0-9_][a-zA-Z0-9_]*$", frame['key']):
+        if re.match(NON_QUOTED_KEY_REGEX, frame['key']):
           if s:
             s += '.'
           s += frame['key']
