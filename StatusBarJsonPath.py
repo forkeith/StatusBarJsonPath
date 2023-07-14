@@ -4,10 +4,10 @@ import sublime_plugin
 
 class CopyJsonPathCommand(sublime_plugin.TextCommand):
   def run(self, edit):
-    json_paths = get_json_paths(self.view)
-    print(json_paths)
+    json_paths = list(get_json_paths(self.view))
     if len(json_paths):
-      sublime.set_clipboard( ", ".join(json_paths))
+      sublime.set_clipboard(", ".join(json_paths))
+      self.view.window().status_message('Copied json path to clipboard.')
 
 
 class StatusBarJsonPath(sublime_plugin.EventListener):
