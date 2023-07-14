@@ -1,5 +1,3 @@
-import re
-
 import sublime
 import sublime_plugin
 
@@ -79,11 +77,12 @@ def json_path_for(view, region):
 
   for token_region, scope, token_text in tokens:
     if token_text == '"':
-      s = read_string(tokens)
+      string_content, token_count = read_string(tokens)
       if len(stack):
         frame = stack[-1]
         if frame['col_type'] == 'object' and expect_key:
-          frame['key'] = s
+          frame['key'] = string_content
+          frame['key_complexity'] = token_count
           expect_key = False
     elif token_text == '{':
       stack.append(dict(col_type='object'))
@@ -111,14 +110,13 @@ def tokens_with_text(view, region):
     token_text = text[token_region.a - offset : token_region.b - offset]
     yield (token_region, scope, token_text)
 
-NON_QUOTED_KEY_REGEX = r"^[a-zA-Z0-9_][a-zA-Z0-9_]*$"
 
 def path_to_string(path_stack):
   s = '';
   for frame in path_stack:
     if frame['col_type'] == 'object':
       if 'key' in frame:
-        if re.match(NON_QUOTED_KEY_REGEX, frame['key']):
+        if frame['key_complexity'] == 1:
           if s:
             s += '.'
           s += frame['key']
@@ -132,9 +130,11 @@ def path_to_string(path_stack):
 
 def read_string(tokens):
   value = ''
+  token_count = 0
   for token_region, scope, token_text in tokens:
     if token_text == '"':
-      return value
+      return (value, token_count)
+    token_count += 1
     value += token_text
   # end of string not reached, just return what we have
-  return value
+  return (value, token_count)
