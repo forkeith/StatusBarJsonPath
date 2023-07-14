@@ -3,116 +3,138 @@ import re
 import sublime
 import sublime_plugin
 
+
 class CopyJsonPathCommand(sublime_plugin.TextCommand):
-	def run(self, edit):
-		json_paths = get_json_path(self.view)
-		print(json_paths)
-		if len(json_paths):
-			sublime.set_clipboard( ", ".join(json_paths))
+  def run(self, edit):
+    json_paths = get_json_paths(self.view)
+    print(json_paths)
+    if len(json_paths):
+      sublime.set_clipboard( ", ".join(json_paths))
+
 
 class StatusBarJsonPath(sublime_plugin.EventListener):
-	KEY_SIZE = "JSONPath"
+  KEY_JSON_PATH = "JSONPath"
 
-	def update_json_path(self, view):
-		json_paths = get_json_path(view)
-		if len(json_paths):
-			view.set_status(self.KEY_SIZE, "JSONPath: " + ", ".join(json_paths))
-		else:
-			view.erase_status(self.KEY_SIZE)
+  def update_json_path(self, view):
+    json_paths = list(get_json_paths(view))
+    if len(json_paths):
+      view.set_status(self.KEY_JSON_PATH, "JSONPath: " + ", ".join(json_paths))
+    else:
+      view.erase_status(self.KEY_JSON_PATH)
 
-	on_selection_modified_async = update_json_path
-
-def get_json_path(view):
-	json_paths = []
-	tag = view.change_count()
-
-	for region in view.sel():
-		if view.change_count() != tag:
-			# Buffer was changed, we abort our mission.
-			return None, None
-		start = region.begin()
-		end = region.end()
-		if view.scope_name(start) != view.scope_name(end):
-			break
-		if 'source.json' not in view.scope_name(start) or 'source.json' not in view.scope_name(end):
-			break
-
-		for scope in view.find_by_selector('source.json'):
-			if scope.begin() < start and scope.end() > start:
-				break
-
-		if scope is None:
-			return None, None
-
-		text = view.substr(scope)
-		jsonpath = json_path_to(text, end)
-
-		if jsonpath: json_paths.append(jsonpath)
-	return json_paths
-
-# ported from https://github.com/nidu/vscode-copy-json-path/blob/master/src/jsPathTo.ts
-def json_path_to(text,offset):
-	pos = 0
-	stack = []
-	is_in_key = False
-
-	while pos < offset:
-		start_pos = pos
-		if text[pos] == '"':
-			s, new_pos = read_string(text, pos)
-			if len(stack):
-				frame = stack[-1]
-				if frame['col_type'] == 'object' and is_in_key:
-					frame['key'] = s
-					is_in_key = False
-			pos = new_pos
-		elif text[pos] == '{':
-			stack.append(dict(col_type='object'))
-			is_in_key = True
-		elif text[pos] == '[':
-			stack.append(dict(col_type='array',index=0))
-		elif text[pos] == '}' or text[pos] == ']':
-			stack.pop()
-		elif text[pos] == ',':
-			if len(stack):
-				frame = stack[-1]
-				if frame['col_type'] == 'object':
-					is_in_key = True
-				elif frame['col_type'] == 'array':
-					frame['index'] += 1
-
-		if pos == start_pos: pos += 1
-	return path_to_string(stack)
-
-def path_to_string(path):
-	s = '';
-	for frame in path:
-		if frame['col_type'] == 'object':
-			if 'key' in frame:
-				if re.match(r"^[a-zA-Z0-9_][a-zA-Z0-9_]*$", frame['key']):
-					if s: s += '.'
-					s += frame['key']
-				else:
-					key = frame['key'].replace('"', '\\"')
-					s += '["' + frame['key'] + '"]'
-		else:
-			s += '[' + str(frame['index']) + ']'
-	return s
+  on_selection_modified_async = update_json_path
 
 
-def read_string(text, pos):
-	p = pos + 1
-	i = find_end_quote(text, p)
-	return text[p:i], i + 1
+def is_line_delimited_json(view, pos):
+  # TODO: get clever and check containing markdown code block region using pos param?
+  filename = view.file_name()
+  return filename and filename.endswith('.ndjson')
 
-# Find the next end quote
-def find_end_quote(text, i):
-	while i < len(text):
-		if text[i] == '"':
-			bt = i;
-			# Handle backtracking to find if this quote is escaped (or, if the escape is escaping a slash)
-			while 0 <= bt and text[bt] == '\\': bt -= 1
-			if (i - bt) % 2 == 0: break
-		i += 1
 
-	return i;
+def get_json_paths(view):
+  change_count_at_beginning = view.change_count()
+
+  for region in view.sel():
+    if view.change_count() != change_count_at_beginning:
+      # Buffer was changed, we abort our mission.
+      break
+
+    pos = region.b
+    if not view.match_selector(pos, 'source.json'):
+      break
+
+    # expand region to cover preceding json text
+    containing_json_region = view.line(pos) if is_line_delimited_json(view, pos) else get_containing_region(view, 'source.json', pos)
+    # so we don't cut off in the middle of a json key, we need to find the end of the string we are in
+    if view.match_selector(pos, 'meta.mapping.key string'):
+      MAX_SEARCH_LEN = 128
+      cutoff = containing_json_region.b - pos
+      tokens = tokens_with_text(view, sublime.Region(pos, pos + min(cutoff, MAX_SEARCH_LEN)))
+      for token_region, scope, token_text in tokens:
+        if token_text == '"' and sublime.score_selector(scope, 'punctuation.definition.string.end') > 0:
+          pos = token_region.a
+          break
+
+    preceding_json_region = sublime.Region(containing_json_region.a, pos)
+
+
+    jsonpath = json_path_for(view, preceding_json_region)
+    if jsonpath:
+      yield jsonpath
+
+
+def get_containing_region(view, scope_selector, pos):
+  for region in view.find_by_selector(scope_selector):
+    if region.begin() <= pos and region.end() >= pos:
+      return region
+    if pos > region.end():
+      break
+  return None
+
+
+def json_path_for(view, region):
+  pos = 0
+  stack = []
+  expect_key = False
+
+  tokens = iter(tokens_with_text(view, region))
+
+  for token_region, scope, token_text in tokens:
+    if token_text == '"':
+      s = read_string(tokens)
+      if len(stack):
+        frame = stack[-1]
+        if frame['col_type'] == 'object' and expect_key:
+          frame['key'] = s
+          expect_key = False
+    elif token_text == '{':
+      stack.append(dict(col_type='object'))
+      expect_key = True
+    elif token_text == '[':
+      stack.append(dict(col_type='array',index=0))
+    elif token_text == '}' or token_text == ']':
+      stack.pop()
+    elif token_text == ',':
+      if len(stack):
+        frame = stack[-1]
+        if frame['col_type'] == 'object':
+          expect_key = True
+        elif frame['col_type'] == 'array':
+          frame['index'] += 1
+
+  return path_to_string(stack)
+
+
+def tokens_with_text(view, region):
+  text = view.substr(region)
+  offset = region.begin()
+  for token_region, scope in view.extract_tokens_with_scopes(region):
+    token_text = text[token_region.a - offset : token_region.b - offset]
+    yield (token_region, scope, token_text)
+
+
+def path_to_string(path_stack):
+  s = '';
+  for frame in path_stack:
+    if frame['col_type'] == 'object':
+      if 'key' in frame:
+        if re.match(r"^[a-zA-Z0-9_][a-zA-Z0-9_]*$", frame['key']):
+          if s:
+            s += '.'
+          s += frame['key']
+        else:
+          key = frame['key'].replace('"', '\\"')
+          s += '["' + frame['key'] + '"]'
+    else:
+      s += '[' + str(frame['index']) + ']'
+  return s
+
+
+def read_string(tokens):
+  value = ''
+  for token_region, scope, token_text in tokens:
+    if token_text == '"':
+      return value
+    value += token_text
+  # end of string not reached, just return what we have
+  return value
