@@ -99,6 +99,7 @@ def json_path_for(view, region):
         frame = stack[-1]
         if frame['col_type'] == 'object':
           expect_key = True
+          frame.pop('key', None)
         elif frame['col_type'] == 'array':
           frame['index'] += 1
 
