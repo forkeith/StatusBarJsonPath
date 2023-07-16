@@ -9,6 +9,9 @@ class CopyJsonPathCommand(sublime_plugin.TextCommand):
       sublime.set_clipboard(", ".join(json_paths))
       self.view.window().status_message('Copied json path to clipboard.')
 
+  def is_visible(self):
+    return any(self.view.match_selector(region.a, 'source.json') for region in self.view.sel())
+
 
 class StatusBarJsonPath(sublime_plugin.EventListener):
   KEY_JSON_PATH = "JSONPath"
