@@ -6,8 +6,7 @@ import sublime_plugin
 class CopyJsonPathCommand(sublime_plugin.TextCommand):
 	def run(self, edit):
 		json_paths = get_json_path(self.view)
-		print(json_paths)
-		if len(json_paths):
+		if json_paths:
 			sublime.set_clipboard( ", ".join(json_paths))
 
 class StatusBarJsonPath(sublime_plugin.EventListener):
@@ -15,7 +14,7 @@ class StatusBarJsonPath(sublime_plugin.EventListener):
 
 	def update_json_path(self, view):
 		json_paths = get_json_path(view)
-		if len(json_paths):
+		if json_paths:
 			view.set_status(self.KEY_SIZE, "JSONPath: " + ", ".join(json_paths))
 		else:
 			view.erase_status(self.KEY_SIZE)
@@ -34,15 +33,9 @@ def get_json_path(view):
 		end = region.end()
 		if view.scope_name(start) != view.scope_name(end):
 			break
-		if 'source.json' not in view.scope_name(start) or 'source.json' not in view.scope_name(end):
-			break
-
-		for scope in view.find_by_selector('source.json'):
-			if scope.begin() < start and scope.end() > start:
-				break
-
+		scope = view.expand_to_scope(start, 'source.json')
 		if scope is None:
-			return None, None
+			return None
 
 		text = view.substr(scope)
 		jsonpath = json_path_to(text, end)
