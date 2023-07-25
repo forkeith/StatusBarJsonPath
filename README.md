@@ -6,7 +6,7 @@ The plugin also includes a command _JSONPath: Copy_ to copy the displayed path t
 ## Example
 
 Given the following JSON object:
-```
+```json
 {
 	"name": "Hello World",
 	"tags": [

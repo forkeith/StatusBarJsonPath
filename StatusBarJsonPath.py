@@ -5,7 +5,7 @@ import sublime_plugin
 
 class CopyJsonPathCommand(sublime_plugin.TextCommand):
 	def run(self, edit):
-		json_paths = get_json_path(self.view)
+		json_paths = list(get_json_paths(self.view))
 		print(json_paths)
 		if len(json_paths):
 			sublime.set_clipboard( ", ".join(json_paths))
@@ -21,7 +21,7 @@ class StatusBarJsonPath(sublime_plugin.EventListener):
 	KEY_SIZE = "JSONPath"
 
 	def update_json_path(self, view):
-		json_paths = get_json_path(view)
+		json_paths = list(get_json_paths(view))
 		if len(json_paths):
 			view.set_status(self.KEY_SIZE, "JSONPath: " + ", ".join(json_paths))
 		else:
@@ -29,103 +29,113 @@ class StatusBarJsonPath(sublime_plugin.EventListener):
 
 	on_selection_modified_async = update_json_path
 
-def get_json_path(view):
-	json_paths = []
-	tag = view.change_count()
+
+def get_json_paths(view: sublime.View):
+	change_count_at_beginning = view.change_count()
 
 	for region in view.sel():
-		if view.change_count() != tag:
+		if view.change_count() != change_count_at_beginning:
 			# Buffer was changed, we abort our mission.
-			return None, None
-		start = region.begin()
-		end = region.end()
-		if view.scope_name(start) != view.scope_name(end):
 			break
 
-		scope = view.expand_to_scope(start, 'source.json')
+		pos = region.b
+		containing_json_region = view.expand_to_scope(pos, 'source.json')
+		if containing_json_region is None:
+			continue
 
-		if scope is None:
-			return None, None
+		# so we don't cut off in the middle of a json key, we need to find the end of the string we are in
+		if view.match_selector(pos, 'meta.mapping.key string'):
+			string_region = view.expand_to_scope(pos, 'meta.mapping.key string')
+			if string_region is not None:
+				pos = string_region.b
 
-		text = view.substr(scope)
-		jsonpath = json_path_to(text, end)
+		preceding_json_region = sublime.Region(containing_json_region.a, pos)
 
-		if jsonpath: json_paths.append(jsonpath)
-	return json_paths
+		jsonpath = json_path_for(view, preceding_json_region)
+		if jsonpath:
+			yield jsonpath
 
-# ported from https://github.com/nidu/vscode-copy-json-path/blob/master/src/jsPathTo.ts
-def json_path_to(text,offset):
-	pos = 0
+
+def build_json_path_stack_frame_for(view: sublime.View, region: sublime.Region):
 	stack = []
-	is_in_key = False
+	expect_key = False
 
-	while pos < offset:
-		start_pos = pos
-		if text[pos] == '"':
-			s, new_pos = read_string(text, pos)
+	tokens = iter(tokens_with_text(view, region))
+
+	for token_region, scope, token_text in tokens:
+		if token_text == '"':
+			string_content, token_count, token_region = read_string_from_token_iterator(tokens)
 			if len(stack):
 				frame = stack[-1]
 				if frame['col_type'] == 'object':
-					if is_in_key:
-						frame['key'] = s
-						is_in_key = False
-					elif new_pos <= offset:
+					if expect_key:
+						frame['key'] = string_content
+						frame['key_complexity'] = token_count
+						expect_key = False
+					elif token_region and token_region.b < region.b:
 						frame.pop('key', None)
-			pos = new_pos
-		elif text[pos] == '{':
+		elif token_text == '{':
 			stack.append(dict(col_type='object'))
-			is_in_key = True
-		elif text[pos] == '[':
+			expect_key = True
+		elif token_text == '[':
 			stack.append(dict(col_type='array',index=0))
-		elif text[pos] == '}' or text[pos] == ']':
+		elif token_text == '}' or token_text == ']':
 			stack.pop()
 			if len(stack):
 				frame = stack[-1]
 				if frame['col_type'] == 'object':
 					frame.pop('key', None)
-		elif text[pos] == ',':
+		elif token_text == ',':
 			if len(stack):
 				frame = stack[-1]
 				if frame['col_type'] == 'object':
-					is_in_key = True
+					expect_key = True
 					frame.pop('key', None)
 				elif frame['col_type'] == 'array':
 					frame['index'] += 1
 
-		if pos == start_pos: pos += 1
+	return stack
+
+
+def json_path_for(view: sublime.View, region: sublime.Region) -> str:
+	stack = build_json_path_stack_frame_for(view, region)
 	return path_to_string(stack)
 
-def path_to_string(path):
-	s = '';
-	for frame in path:
+
+def tokens_with_text(view: sublime.View, region: sublime.Region):
+	text = view.substr(region)
+	offset = region.begin()
+	for token_region, scope in view.extract_tokens_with_scopes(region):
+		token_text = text[token_region.a - offset : token_region.b - offset]
+		yield (token_region, scope, token_text)
+
+
+def path_to_string(path_stack) -> str:
+	constructed_path = '';
+	for frame in path_stack:
 		if frame['col_type'] == 'object':
 			if 'key' in frame:
-				if re.match(r"^[a-zA-Z0-9_][a-zA-Z0-9_]*$", frame['key']):
-					if s: s += '.'
-					s += frame['key']
+				if frame['key_complexity'] == 1:
+					if constructed_path:
+						constructed_path += '.'
+					constructed_path += frame['key']
 				else:
 					key = frame['key'].replace('"', '\\"')
-					s += '["' + frame['key'] + '"]'
+					constructed_path += '["' + frame['key'] + '"]'
 		else:
-			s += '[' + str(frame['index']) + ']'
-	if s != '':
-		s = '.' + s
-	return s
+			constructed_path += '[' + str(frame['index']) + ']'
+	return '.' + constructed_path
 
 
-def read_string(text, pos):
-	p = pos + 1
-	i = find_end_quote(text, p)
-	return text[p:i], i + 1
-
-# Find the next end quote
-def find_end_quote(text, i):
-	while i < len(text):
-		if text[i] == '"':
-			bt = i;
-			# Handle backtracking to find if this quote is escaped (or, if the escape is escaping a slash)
-			while 0 <= bt and text[bt] == '\\': bt -= 1
-			if (i - bt) % 2 == 0: break
-		i += 1
-
-	return i;
+def read_string_from_token_iterator(tokens):
+	value = ''
+	token_count = 0
+	prev_token_region = None
+	for token_region, scope, token_text in tokens:
+		if token_text == '"':
+			return (value, token_count, token_region)
+		token_count += 1
+		value += token_text
+		prev_token_region = token_region
+	# end of string not reached, just return what we have
+	return (value, token_count, prev_token_region)
