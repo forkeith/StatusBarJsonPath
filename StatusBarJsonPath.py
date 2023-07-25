@@ -41,12 +41,8 @@ def get_json_path(view):
 		end = region.end()
 		if view.scope_name(start) != view.scope_name(end):
 			break
-		if 'source.json' not in view.scope_name(start) or 'source.json' not in view.scope_name(end):
-			break
 
-		for scope in view.find_by_selector('source.json'):
-			if scope.begin() < start and scope.end() > start:
-				break
+		scope = view.expand_to_scope(start, 'source.json')
 
 		if scope is None:
 			return None, None
